@@ -23,21 +23,33 @@ def get_template():
     if not os.path.isdir(TEMPLATE_FILE_PATH):
         raise f"设置的模板地址错误, {TEMPLATE_FILE_PATH}不是一个文件目录"
     add_template(template_path=TEMPLATE_FILE_PATH, sub="", tem=tem)
-    return tem
 
-# 获取名字和坐标
 dict_tempate = get_template()
 def match_template_get_NP(img):
+    """
+    获取名字和坐标
+
+    ret: {
+        label_name: 
+    }
+    """
     dict_rst = {}
     for k, v in dict_tempate.items():
-        if img.shape[0] <= v.shape[0] or img.shape[1] < v.shape[1]:
-            continue
         rst = aircv.find_all_template(img, v, threshold=0.85)
         if rst:
             dict_rst[k] = rst
     return dict_rst
 
 def trans2shapes(dict_rst, all_label):
+    """
+    all_label: [str, str]
+    dict_rst: {
+        label: [
+            {"rectangle": [(左上), (左下), (右上), (右下)]},
+            {}
+        ]
+    }
+    """
     shapes = []
     for k, v_list in dict_rst.items():
         for v in v_list:
@@ -48,12 +60,22 @@ def trans2shapes(dict_rst, all_label):
                 'label': label,
                 'line_color': (123, 247, 68, 100),
                 'fill_color': (123, 247, 68, 100),
-                # 'points': [(221.02272727272728, 700.8181818181818), (356.0, 700.8181818181818), (356.0, 804.0), (221.02272727272728, 804.0)],
-                'points': [v["rectangle"][0], v["rectangle"][2], v["rectangle"][3], v["rectangle"][1]],
+                # 'points': [(221.02272727272728, 700.8181818181818), (356.0, 700.8181818181818), (356.0, 804.0), (221.02272727272728, 804.0)], # 左上, 右上, 右下, 左下
+                'points': [v["rectangle"][0], v["rectangle"][2], v["rectangle"][3], v["rectangle"][1]], # rectangle: (左上, 左下, 右上, 右下)
                 'difficult': False
             }
             shapes.append(single)
     return shapes, all_label
+
+def save_yolo_fromat(filename, shapes, img_path, all_label):
+    qimage = QtGui.QImage(img_path)
+    lf.save_yolo_format(
+        filename=filename, shapes=shapes, image_path=img_path,
+        image_data=qimage, class_list=all_label, line_color=(0, 255, 0, 128),
+        fill_color=(255, 0, 0, 128)
+    )
+    print(f"{filename} save success.")
+    
 def label_img(dir_path):
     if not os.path.isdir(dir_path):
         return
@@ -69,14 +91,9 @@ def label_img(dir_path):
         print("耗时: ", time.time() - a)
         filename = img_path.replace(".png", ".txt").replace(".jpg", ".txt")
         shapes, all_label = trans2shapes(dict_rst, all_label)
-        qimage = QtGui.QImage(img_path)
-        lf.save_yolo_format(
-            filename=filename, shapes=shapes, image_path=img_path,
-            image_data=qimage, class_list=all_label, line_color=(0, 255, 0, 128),
-            fill_color=(255, 0, 0, 128)
-        )
-        print(f"{i} save success.")
+        save_yolo_fromat(filename, shapes, img_path, all_label)
 
 if __name__ == "__main__":
-    label_img(IMG_PATH)
+    dir_path = "/Users/ianvzs/Downloads/训练样本/"
+    label_img(dir_path)
 
