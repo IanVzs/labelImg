@@ -1,19 +1,17 @@
 import os
 import cv2
-import torch
 import base64
 import requests
 import numpy as np
-from pathlib import Path
 from loguru import logger
 from fastapi import FastAPI
 from fastapi import FastAPI, Form
-from utils.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
-from utils.general import (check_file, check_img_size, check_requirements, non_max_suppression, print_args, scale_coords)
+
+from model import Model
 
 app = FastAPI()
-
-model = None
+model_26 = Model("26.pt")
+model_26_back = Model("26_bak.pt")
 
 sessionid = ".eJxVjktuwzAMRO_CdWxQiiRHWXbfMxgUKdpuCinwZ5Mgd09dZOPtvJmHecI2CVwhd4zsgzY-oDRO2TbkEzeC6KOlM1tycII6D1SmB61TLf39Bldzgp62dey3Jc_9v8oYOISJ-JbLTuSHylBbrmWdp9TulfZDl_a7Sv79-nQPgpGW8W-trktRQ3cJ-1dSzIkzYjDexGDRo0TrzsGGqELKSEjqTPS-E80XIXi9AUCpS1E:1nUkBG:byF5tpadXbDo6GCiHUdAwjKX4N3D2Ulrr2W01X4w3D4"
 def get_token():
@@ -21,27 +19,6 @@ def get_token():
     return res.json().get('token')
 token = get_token()
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-import sys
-
-from models.common import DetectMultiBackend
-from utils.torch_utils import select_device, time_sync
-
-# Load model
-device = select_device('')
-try:
-    # PyInstaller creates a temp folder and stores path in _MEIPASS
-    BASE_PATH = sys._MEIPASS
-    ROOT = sys._MEIPASS
-except Exception:
-    pass
-model = DetectMultiBackend(os.path.join(BASE_PATH, "26.pt"), device=device, dnn=False)
-stride, names, pt, jit, onnx, engine = model.stride, model.names, model.pt, model.jit, model.onnx, model.engine
-imgsz = check_img_size((640, 640), s=stride)  # check image size
-# Half
-half = False
-half &= (pt or jit or onnx or engine) and device.type != 'cpu'  # FP16 supported on limited backends with CUDA
-if pt or jit:
-    model.model.half() if half else model.model.float()
 
 def convert_to_ls(x, y, width, height, original_width, original_height):
     return x / original_width * 100.0, y / original_height * 100.0, \
@@ -74,76 +51,6 @@ def get_img_by_url(uri):
     img = cv2.imdecode(ndata, cv2.IMREAD_COLOR)
     return img
 
-@torch.no_grad()
-def ob_run(
-        source=os.path.join(BASE_PATH, ''),  # 暂不支持
-        conf_thres=0.25,  # confidence threshold
-        iou_thres=0.45,  # NMS IOU threshold
-        max_det=1000,  # maximum detections per image
-        classes=None,  # filter by class: --class 0, or --class 0 2 3
-        agnostic_nms=False,  # class-agnostic NMS
-        augment=False,  # augmented inference
-        visualize=False,  # visualize features
-        img=None,  # 直接传入img
-    ):
-    rst = []
-    is_img = isinstance(img, np.ndarray)
-    # Dataloader
-    if is_img:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt, img=img)
-        bs = 1  # batch_size
-    else:
-        return {}
-    # Run inference
-    model.warmup(imgsz=(1 if pt else bs, 3, *imgsz), half=half)  # warmup
-    dt, seen = [0.0, 0.0, 0.0], 0
-    for path, im, im0s, vid_cap, s in dataset:
-        t1 = time_sync()
-        im = torch.from_numpy(im).to(device)
-        im = im.half() if half else im.float()  # uint8 to fp16/32
-        im /= 255  # 0 - 255 to 0.0 - 1.0
-        if len(im.shape) == 3:
-            im = im[None]  # expand for batch dim
-        t2 = time_sync()
-        dt[0] += t2 - t1
-
-        # Inference
-        # visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
-        pred = model(im, augment=augment, visualize=visualize)
-        t3 = time_sync()
-        dt[1] += t3 - t2
-
-        # NMS
-        pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
-        dt[2] += time_sync() - t3
-
-        # Process predictions
-        for i, det in enumerate(pred):  # per image
-            seen += 1
-            p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
-
-            p = Path(p)  # to Path
-            s += '%gx%g ' % im.shape[2:]  # print string
-            if len(det):
-                # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
-
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
-
-                # Write results
-                for *xyxy, conf, cls in reversed(det):
-                    rst.append({
-                        "name": names[int(cls)],
-                        "confidence": float(conf),
-                        "result": [int((xyxy[0] + xyxy[2]) / 2), int((xyxy[1] + xyxy[-1]) / 2)],
-                        "xyxy": [int(i) for i in xyxy],
-                    })
-
-        logger.info(f'{s}Done. ({t3 - t2:.3f}s)')
-    return rst
 
 @app.post("/predict")
 def predict(data: dict):
@@ -173,8 +80,11 @@ def predict(data: dict):
         }
         if isinstance(img, np.ndarray) and img.any():
             height, width, _ = img.shape
-            ob_rst = ob_run(img=img)
-            for v in ob_rst:
+            ob_rst = model_26.run(img=img)
+            ob_back_rst = model_26_back.run(img=img)
+            ob_names = [i["name"] for i in ob_rst]
+            ob_back_rst = [i for i in ob_back_rst if (i["name"] not in ob_names and i["name"] in ('dismiss', 'block_account', '1','2', '3', '4', '5'))]
+            for v in ob_rst + ob_back_rst:
                 # result = v["result"] # 中心位置
                 result = (v["xyxy"][0], v["xyxy"][1]) # 左上角
                 xyxy = v["xyxy"]
@@ -210,7 +120,7 @@ def predict(data: dict):
         else:
             all_rst.append(null_label)
     res["results"][0]["result"] = all_rst
-    res["annotations"] = res["results"]
+    # res["annotations"] = res["results"]
     return res
 
 if __name__ == "__main__":

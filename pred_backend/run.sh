@@ -1,1 +1,1 @@
-uvicorn serve_labelstudio:app
+uvicorn main:app
